@@ -13,7 +13,7 @@ default_args = {
     }
 
 with DAG(
-    'main_dag',
+    'courier_ledger_dag',
     default_args = default_args,
     schedule_interval = '0/15 * * * *',
     max_active_runs = 1,
@@ -62,15 +62,24 @@ with DAG(
                    'X-Cohort': cohort, 
                    'X-API-KEY': api_key
                    }
-        res_str = f'https://' + api_endpoint + '/' + api_method + '/' + '?sort_field=_id&sort_direction=asc&offset={offset}'
         start_time = dt.datetime.now()
-        while (dt.datetime.now() - start_time).total_seconds() < 300:
-            res = requests.get(res_str,headers = headers).json()
-            if len(res) == 0:
+        while (dt.datetime.now() - start_time).total_seconds() < 30:
+            res = requests.get('https://'+api_endpoint + api_method,
+                               headers = headers, 
+                               params = {'sort_field':'_id', 
+                                         'sort_direction':'asc',
+                                         'offset': offset,
+                                         'limit': 30})
+            res_json = json.loads(res.content)
+            if len(res_json) == 0:
                 break
-            df = pd.DataFrame(res)
-            offset += len(res)
-        return df
+            if offset == 0:
+            df_all = pd.DataFrame(res_json)
+            if offset > 0:
+                df_new = pd.DataFrame(res_json)
+                df_all = pd.concat([df_all, df_new], ignore_index=True)
+            offset = offset + len(res_json)
+        return df_all
 
     save_params_t = PythonOperator(
         task_id = 'save_params_t',
