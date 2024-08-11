@@ -8,6 +8,7 @@ secrets = {
     'pg_base_name': 'de',
     'pg_user': 'jovyan',
     'pg_password': 'jovyan',
-    'stage_schema_name': 'stage',
-    'dm_schema_name': 'mart'
+    'stage_schema_name': 'stg',
+    'dds_schema_name': 'dds',
+    'dm_schema_name': 'dm'
 }
