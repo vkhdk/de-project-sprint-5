@@ -21,11 +21,18 @@ with DAG(
 
     from airflow.operators.dummy_operator import DummyOperator
     from airflow.operators.python import PythonOperator
+    from airflow.utils.task_group import TaskGroup
     from secrets_p5 import secrets
     import json
     import pandas as pd
     import requests
     from sqlalchemy import create_engine, text
+    from sql_scripts import dds_api_couriers, \
+                            dds_api_deliveries, \
+                            dds_api_orders, \
+                            dds_fct_api_deliveries, \
+                            dm_courier_ledger
+
 
     def save_params(**kwarg):
         current_datetime = dt.datetime.now()
@@ -114,43 +121,114 @@ with DAG(
         dag = dag
         )
     
-    get_data_from_api_couriers = PythonOperator(
-        task_id = 'get_data_from_api_couriers',
-        python_callable = get_data_from_api,
+    with TaskGroup(group_id='tg_etl') as tg_etl:
+        get_data_from_api_couriers = PythonOperator(
+            task_id = 'get_data_from_api_couriers',
+            python_callable = get_data_from_api,
+            provide_context=True,
+            op_kwargs = {
+                'kwarg':{
+                    'api_method': '/couriers',
+                    'schema_name': secrets['stage_schema_name'],
+                    'table_name': 'api_couriers',
+                    'params': {'sort_field':'_id', 
+                            'sort_direction':'asc',
+                            'limit': 50}
+                }
+            },
+            dag = dag
+            )
+
+        get_data_from_api_deliveries = PythonOperator(
+            task_id = 'get_data_from_api_deliveries',
+            python_callable = get_data_from_api,
+            provide_context=True,
+            op_kwargs = {
+                'kwarg':{
+                    'api_method': '/deliveries',
+                    'schema_name': secrets['stage_schema_name'],
+                    'table_name': 'api_deliveries',
+                    'params': {'sort_field':'date', 
+                            'sort_direction':'asc',
+                            'limit': 50,
+                            'from': '{{ task_instance.xcom_pull(task_ids="save_params_t", key="seven_days_ago") }}',
+                            'to': '{{ task_instance.xcom_pull(task_ids="save_params_t", key="current_datetime") }}'}
+                }
+            },
+            dag = dag
+            )
+        
+        fill_dds_api_couriers = PythonOperator(
+            task_id = 'fill_dds_api_couriers',
+            python_callable = execute_sql,
+            provide_context=True,
+            op_kwargs = {
+                'sql': dds_api_couriers.format(
+                    stage_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="stage_schema_name") }}',
+                    dds_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="dds_schema_name") }}'
+                    ),
+            },
+            dag = dag
+            )
+        
+        fill_dds_api_deliveries = PythonOperator(
+            task_id = 'fill_dds_api_deliveries',
+            python_callable = execute_sql,
+            provide_context=True,
+            op_kwargs = {
+                'sql': dds_api_deliveries.format(
+                    stage_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="stage_schema_name") }}',
+                    dds_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="dds_schema_name") }}'
+                    ),
+            },
+            dag = dag
+            )
+        
+        fill_dds_api_orders = PythonOperator(
+            task_id = 'fill_dds_api_orders',
+            python_callable = execute_sql,
+            provide_context=True,
+            op_kwargs = {
+                'sql': dds_api_orders.format(
+                    stage_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="stage_schema_name") }}',
+                    dds_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="dds_schema_name") }}'
+                    ),
+            },
+            dag = dag
+            )
+        
+        fill_dds_fct_api_deliveries = PythonOperator(
+            task_id = 'fill_dds_fct_api_deliveries',
+            python_callable = execute_sql,
+            provide_context=True,
+            op_kwargs = {
+                'sql': dds_fct_api_deliveries.format(
+                    stage_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="stage_schema_name") }}',
+                    dds_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="dds_schema_name") }}'
+                    ),
+            },
+            dag = dag
+            )
+        
+        middle = DummyOperator(task_id='middle')
+        
+        [get_data_from_api_couriers, get_data_from_api_deliveries] >> middle >> [fill_dds_api_couriers , fill_dds_api_deliveries , fill_dds_api_orders] >> fill_dds_fct_api_deliveries
+
+    fill_dm_courier_ledger = PythonOperator(
+        task_id = 'fill_dm_courier_ledger',
+        python_callable = execute_sql,
         provide_context=True,
         op_kwargs = {
-            'kwarg':{
-                'api_method': '/couriers',
-                'schema_name': secrets['stage_schema_name'],
-                'table_name': 'api_couriers',
-                'params': {'sort_field':'_id', 
-                        'sort_direction':'asc',
-                        'limit': 50}
-            }
+            'sql': dm_courier_ledger.format(
+                stage_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="stage_schema_name") }}',
+                dds_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="dds_schema_name") }}',
+                dm_schema_name = '{{ task_instance.xcom_pull(task_ids="save_params_t", key="dm_schema_name") }}'
+                ),
         },
         dag = dag
         )
 
-    get_data_from_api_deliveries = PythonOperator(
-        task_id = 'get_data_from_api_deliveries',
-        python_callable = get_data_from_api,
-        provide_context=True,
-        op_kwargs = {
-            'kwarg':{
-                'api_method': '/deliveries',
-                'schema_name': secrets['stage_schema_name'],
-                'table_name': 'api_deliveries',
-                'params': {'sort_field':'date', 
-                        'sort_direction':'asc',
-                        'limit': 50,
-                        'from': '{{ task_instance.xcom_pull(task_ids="save_params_t", key="seven_days_ago") }}',
-                        'to': '{{ task_instance.xcom_pull(task_ids="save_params_t", key="current_datetime") }}'}
-            }
-        },
-        dag = dag
-        )
-    
     start = DummyOperator(task_id='start')
     end = DummyOperator(task_id='end')
 
-    start >> save_params_t >> [get_data_from_api_couriers, get_data_from_api_deliveries] >> end
+    start >> save_params_t >> tg_etl >> fill_dm_courier_ledger >> end
